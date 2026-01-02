@@ -11,7 +11,10 @@ import ventasRoutes from './routes/ventas.js';
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 3002;
+
+// Confiar en el proxy (nginx) para headers como X-Forwarded-For
+app.set('trust proxy', true);
 
 /**
  * MIDDLEWARE DE SEGURIDAD

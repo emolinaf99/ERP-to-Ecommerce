@@ -106,7 +106,7 @@ Fragrance.hasMany(ProductVariant, { foreignKey: 'fragrance_id' });
 Category.hasMany(ProductVariant, { foreignKey: 'category_id' });
 Product.belongsTo(Category, { foreignKey: 'category_id' });
 Category.hasMany(Product, { foreignKey: 'category_id' });
-Category.belongsTo(TypeVolume, { foreignKey: 'type_size_id', as: 'TypeVolume' });
+Category.belongsTo(TypeVolume, { foreignKey: 'type_size_id', as: 'typeSize' });
 TypeVolume.hasMany(Category, { foreignKey: 'type_size_id' });
 Fragrance.belongsTo(House, { foreignKey: 'house_id' });
 House.hasMany(Fragrance, { foreignKey: 'house_id' });
