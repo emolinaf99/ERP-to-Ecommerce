@@ -22,7 +22,7 @@ const Order = sequelize.define('Order', {
   payment_preference_id: { type: DataTypes.STRING(100), allowNull: true },
   payment_id: { type: DataTypes.STRING(100), allowNull: true },
   payment_details: { type: DataTypes.JSON, allowNull: true },
-  customer_email: { type: DataTypes.STRING(255), allowNull: false },
+  customer_email: { type: DataTypes.STRING(255), allowNull: true },
   newsletter_consent: { type: DataTypes.BOOLEAN, defaultValue: false },
   notes: { type: DataTypes.TEXT, allowNull: true }
 }, {
@@ -42,7 +42,9 @@ const OrderItem = sequelize.define('OrderItem', {
   category: { type: DataTypes.STRING(100), allowNull: false },
   quantity: { type: DataTypes.INTEGER, allowNull: false },
   unit_price: { type: DataTypes.DECIMAL(10, 2), allowNull: false },
-  total_price: { type: DataTypes.DECIMAL(10, 2), allowNull: false }
+  total_price: { type: DataTypes.DECIMAL(10, 2), allowNull: false },
+  fragrance_amount: { type: DataTypes.DECIMAL(10, 2), allowNull: true },
+  fragrance_purchased: { type: DataTypes.BOOLEAN, defaultValue: false }
 }, {
   tableName: 'order_items',
   underscored: true,
@@ -68,7 +70,8 @@ const Product = sequelize.define('Product', {
   price: { type: DataTypes.DECIMAL(10, 2), allowNull: false },
   discount_percentage: { type: DataTypes.DECIMAL(5, 2), defaultValue: 0 },
   gender: { type: DataTypes.ENUM('masculino', 'femenino', 'unisex'), defaultValue: 'unisex' },
-  is_active: { type: DataTypes.BOOLEAN, defaultValue: true }
+  is_active: { type: DataTypes.BOOLEAN, defaultValue: true },
+  fragrance_amount: { type: DataTypes.DECIMAL(10, 2), allowNull: true }
 }, { tableName: 'products', underscored: true });
 
 const Fragrance = sequelize.define('Fragrance', {
@@ -369,6 +372,13 @@ export const crearVentaManual = async (req, res) => {
         });
       }
 
+      console.log('🔍 [VENTAS] Producto consultado:', {
+        id: product.id,
+        name: product.name,
+        fragrance_amount: product.fragrance_amount,
+        fragrance_amount_type: typeof product.fragrance_amount
+      });
+
       // Obtener fragancia para detalles
       const fragrance = await Fragrance.findByPk(item.fragrance_id, {
         include: [{ model: House }],
@@ -452,10 +462,14 @@ export const crearVentaManual = async (req, res) => {
 
     // Crear los items de la orden
     for (const item of orderItems) {
-      await OrderItem.create({
+      const orderItemData = {
         order_id: order.id,
         ...item
-      }, { transaction });
+      };
+
+      console.log('📝 [VENTAS] Creando OrderItem con datos:', JSON.stringify(orderItemData, null, 2));
+
+      await OrderItem.create(orderItemData, { transaction });
     }
 
     await transaction.commit();
@@ -530,15 +544,48 @@ export const getMisVentas = async (req, res) => {
 /**
  * GET /api/erp/pedidos/todos
  * Obtener TODOS los pedidos (para rol produccion y admin)
+ *
+ * Producción solo puede ver pedidos en estados: confirmed, processing, finished
+ * Admin puede ver todos los pedidos
  */
 export const getTodosPedidos = async (req, res) => {
   try {
     const { limit = 50, offset = 0, status } = req.query;
+    const userRole = req.user?.role;
 
     // Construir filtro de búsqueda
     const where = {};
-    if (status) {
-      where.status = status;
+
+    // Si es producción, solo mostrar pedidos en estados: confirmed, processing, finished
+    if (userRole === 'produccion') {
+      if (status) {
+        // Si se especifica un status, verificar que sea uno permitido para producción
+        const estadosPermitidos = ['confirmed', 'processing', 'finished'];
+        if (estadosPermitidos.includes(status)) {
+          where.status = status;
+        } else {
+          // Si intenta filtrar por un estado no permitido, retornar vacío
+          return res.json({
+            success: true,
+            data: {
+              pedidos: [],
+              total: 0,
+              limit: parseInt(limit),
+              offset: parseInt(offset)
+            }
+          });
+        }
+      } else {
+        // Si no se especifica status, mostrar solo los estados permitidos
+        where.status = {
+          [sequelize.Sequelize.Op.in]: ['confirmed', 'processing', 'finished']
+        };
+      }
+    } else {
+      // Para admin, aplicar filtro normal
+      if (status) {
+        where.status = status;
+      }
     }
 
     const pedidos = await Order.findAll({
@@ -576,17 +623,17 @@ export const getTodosPedidos = async (req, res) => {
 
 /**
  * GET /api/erp/compras/necesidades-fragancias
- * Calcular cuánta fragancia se necesita comprar según pedidos activos
+ * Calcular cuánta fragancia se necesita comprar según pedidos confirmados
  * Solo para rol compras y admin
+ *
+ * IMPORTANTE: Solo se consideran pedidos en estado 'confirmed'
  */
 export const getNecesidadesFragancias = async (req, res) => {
   try {
-    // Obtener todos los pedidos activos (confirmed, processing, shipped)
+    // Obtener solo los pedidos confirmados (confirmed)
     const pedidosActivos = await Order.findAll({
       where: {
-        status: {
-          [sequelize.Sequelize.Op.in]: ['confirmed', 'processing', 'shipped']
-        }
+        status: 'confirmed'
       },
       include: [
         {
@@ -597,10 +644,16 @@ export const getNecesidadesFragancias = async (req, res) => {
     });
 
     // Agrupar fragancias por casa y fragancia
+    // SOLO incluir items donde fragrance_purchased = false
     const necesidades = {};
 
     for (const pedido of pedidosActivos) {
       for (const item of pedido.items) {
+        // Saltar items que ya fueron comprados
+        if (item.fragrance_purchased) {
+          continue;
+        }
+
         // Usar fragrance_amount (en gramos) para calcular necesidades
         const fragranceAmount = item.fragrance_amount && !isNaN(parseFloat(item.fragrance_amount))
           ? parseFloat(item.fragrance_amount)
@@ -618,8 +671,14 @@ export const getNecesidadesFragancias = async (req, res) => {
             total_cantidad: 0,
             total_gramos_fragancia: 0,
             unidad: 'gr', // Siempre en gramos
+            fecha_pedido_mas_antiguo: pedido.created_at, // Fecha del primer pedido
             pedidos: []
           };
+        }
+
+        // Actualizar fecha si este pedido es más antiguo
+        if (new Date(pedido.created_at) < new Date(necesidades[key].fecha_pedido_mas_antiguo)) {
+          necesidades[key].fecha_pedido_mas_antiguo = pedido.created_at;
         }
 
         // Sumar cantidades
@@ -630,14 +689,15 @@ export const getNecesidadesFragancias = async (req, res) => {
           quantity: item.quantity,
           volume: item.volume,
           fragrance_amount: fragranceAmount,
-          status: pedido.status
+          status: pedido.status,
+          created_at: pedido.created_at
         });
       }
     }
 
-    // Convertir objeto a array y ordenar por total_gramos_fragancia descendente
+    // Convertir objeto a array y ordenar por fecha (más antigua primero = mayor prioridad)
     const necesidadesArray = Object.values(necesidades).sort(
-      (a, b) => b.total_gramos_fragancia - a.total_gramos_fragancia
+      (a, b) => new Date(a.fecha_pedido_mas_antiguo) - new Date(b.fecha_pedido_mas_antiguo)
     );
 
     // Calcular total de productos
@@ -657,6 +717,207 @@ export const getNecesidadesFragancias = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Error al calcular necesidades de fragancias'
+    });
+  }
+};
+
+/**
+ * POST /api/erp/ventas/cambiar-estado-pedidos-activos
+ * Cambiar el estado de todos los pedidos activos (confirmed)
+ * Solo para rol compras y admin
+ *
+ * Si hay fragancias_agotadas, los pedidos que contienen esas fragancias
+ * se mantienen en 'confirmed' y NO se cambian a 'processing'
+ */
+export const cambiarEstadoPedidosActivos = async (req, res) => {
+  try {
+    const { nuevo_estado, fragancias_agotadas } = req.body;
+
+    // Validar que se proporcionó un nuevo estado
+    if (!nuevo_estado) {
+      return res.status(400).json({
+        success: false,
+        message: 'El nuevo estado es requerido'
+      });
+    }
+
+    // Validar que el nuevo estado es válido
+    const estadosValidos = ['pending', 'confirmed', 'processing', 'finished', 'shipped', 'delivered', 'cancelled'];
+    if (!estadosValidos.includes(nuevo_estado)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Estado inválido'
+      });
+    }
+
+    let pedidosActualizados = 0;
+    let itemsMarcadosComoPurchased = 0;
+
+    // Si hay fragancias agotadas, marcar solo las NO agotadas como purchased
+    if (fragancias_agotadas && fragancias_agotadas.length > 0) {
+      console.log(`⚠️ [COMPRAS] Fragancias agotadas recibidas:`, fragancias_agotadas);
+
+      // Parsear las fragancias agotadas (formato: "fragrance_name / house_name")
+      const fraganciasParseadas = fragancias_agotadas.map(str => {
+        const partes = str.split(' / ').map(p => p.trim());
+        return {
+          fragrance_name: partes[0],
+          house_name: partes[1]
+        };
+      });
+
+      console.log(`🔍 [COMPRAS] Fragancias parseadas:`, fraganciasParseadas);
+
+      // Obtener todos los pedidos confirmed
+      const pedidosConfirmed = await Order.findAll({
+        where: { status: 'confirmed' },
+        include: [{
+          model: OrderItem,
+          as: 'items'
+        }]
+      });
+
+      // Marcar como purchased los items que NO están en la lista de agotadas
+      for (const pedido of pedidosConfirmed) {
+        for (const item of pedido.items) {
+          // Verificar si este item está en la lista de agotadas
+          const estaAgotada = fraganciasParseadas.some(f =>
+            f.fragrance_name === item.fragrance_name &&
+            f.house_name === item.house_name
+          );
+
+          // Si NO está agotada y NO ha sido marcada como purchased, marcarla
+          if (!estaAgotada && !item.fragrance_purchased) {
+            await item.update({ fragrance_purchased: true });
+            itemsMarcadosComoPurchased++;
+          }
+        }
+      }
+
+      console.log(`✅ [COMPRAS] ${itemsMarcadosComoPurchased} item(s) marcado(s) como purchased`);
+
+      // Ahora actualizar el estado de los pedidos que ya no tienen items pendientes
+      for (const pedido of pedidosConfirmed) {
+        // Recargar items para obtener valores actualizados
+        await pedido.reload({ include: [{ model: OrderItem, as: 'items' }] });
+
+        // Verificar si TODOS los items de este pedido ya fueron purchased
+        const todosPurchased = pedido.items.every(item => item.fragrance_purchased);
+
+        if (todosPurchased) {
+          await pedido.update({ status: nuevo_estado });
+          pedidosActualizados++;
+          console.log(`📦 [COMPRAS] Pedido ${pedido.order_number} cambiado a "${nuevo_estado}" (todos los items purchased)`);
+        } else {
+          console.log(`⏸️ [COMPRAS] Pedido ${pedido.order_number} mantenido en "confirmed" (aún hay items pendientes)`);
+        }
+      }
+    } else {
+      // Si no hay fragancias agotadas, marcar TODOS los items como purchased
+      const pedidosConfirmed = await Order.findAll({
+        where: { status: 'confirmed' },
+        include: [{
+          model: OrderItem,
+          as: 'items'
+        }]
+      });
+
+      for (const pedido of pedidosConfirmed) {
+        for (const item of pedido.items) {
+          if (!item.fragrance_purchased) {
+            await item.update({ fragrance_purchased: true });
+            itemsMarcadosComoPurchased++;
+          }
+        }
+      }
+
+      console.log(`✅ [COMPRAS] ${itemsMarcadosComoPurchased} item(s) marcado(s) como purchased`);
+
+      // Cambiar todos los pedidos confirmed a nuevo estado
+      [pedidosActualizados] = await Order.update(
+        { status: nuevo_estado },
+        { where: { status: 'confirmed' } }
+      );
+
+      console.log(`📦 [COMPRAS] ${pedidosActualizados} pedido(s) cambiado(s) a "${nuevo_estado}"`);
+    }
+
+    res.json({
+      success: true,
+      data: {
+        pedidos_actualizados: pedidosActualizados,
+        items_marcados_como_purchased: itemsMarcadosComoPurchased,
+        nuevo_estado,
+        fragancias_agotadas: fragancias_agotadas || []
+      }
+    });
+  } catch (error) {
+    console.error('Error cambiando estado de pedidos:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error al cambiar el estado de los pedidos'
+    });
+  }
+};
+
+/**
+ * PUT /api/erp/ventas/pedido/:orderId/estado
+ * Cambiar el estado de un pedido individual
+ * Solo para rol produccion y admin
+ */
+export const cambiarEstadoPedido = async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const { nuevo_estado } = req.body;
+
+    // Validar que se proporcionó un nuevo estado
+    if (!nuevo_estado) {
+      return res.status(400).json({
+        success: false,
+        message: 'El nuevo estado es requerido'
+      });
+    }
+
+    // Validar que el nuevo estado es válido
+    const estadosValidos = ['pending', 'confirmed', 'processing', 'finished', 'shipped', 'delivered', 'cancelled'];
+    if (!estadosValidos.includes(nuevo_estado)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Estado inválido'
+      });
+    }
+
+    // Buscar el pedido
+    const pedido = await Order.findByPk(orderId);
+
+    if (!pedido) {
+      return res.status(404).json({
+        success: false,
+        message: 'Pedido no encontrado'
+      });
+    }
+
+    const estadoAnterior = pedido.status;
+
+    // Actualizar el estado
+    await pedido.update({ status: nuevo_estado });
+
+    console.log(`📦 [PRODUCCIÓN] Pedido ${pedido.order_number} cambiado de "${estadoAnterior}" a "${nuevo_estado}"`);
+
+    res.json({
+      success: true,
+      data: {
+        order_id: pedido.id,
+        order_number: pedido.order_number,
+        estado_anterior: estadoAnterior,
+        nuevo_estado: nuevo_estado
+      }
+    });
+  } catch (error) {
+    console.error('Error cambiando estado del pedido:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error al cambiar el estado del pedido'
     });
   }
 };
