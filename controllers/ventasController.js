@@ -306,11 +306,35 @@ export const crearVentaManual = async (req, res) => {
       });
     }
 
-    if (!customer_email) {
+    if (!customer_name) {
       await transaction.rollback();
       return res.status(400).json({
         success: false,
-        message: 'El correo del cliente es requerido'
+        message: 'El nombre del cliente es obligatorio'
+      });
+    }
+
+    if (!customer_phone) {
+      await transaction.rollback();
+      return res.status(400).json({
+        success: false,
+        message: 'El teléfono del cliente es obligatorio'
+      });
+    }
+
+    if (!payment_method) {
+      await transaction.rollback();
+      return res.status(400).json({
+        success: false,
+        message: 'El método de pago es obligatorio'
+      });
+    }
+
+    if (!payment_responsible) {
+      await transaction.rollback();
+      return res.status(400).json({
+        success: false,
+        message: 'El responsable de pago es obligatorio'
       });
     }
 
@@ -411,8 +435,8 @@ export const crearVentaManual = async (req, res) => {
       discount_amount,
       total,
       shipping_address: {
-        name: customer_name || customer_email,
-        phone: customer_phone || 'No proporcionado',
+        name: customer_name || customer_phone,
+        phone: customer_phone,
         address: 'Venta directa',
         city: 'N/A',
         department: 'N/A',
@@ -420,9 +444,9 @@ export const crearVentaManual = async (req, res) => {
       },
       delivery_method: 'pickup',
       payment_method,
-      payment_responsible: payment_responsible || null,
+      payment_responsible,
       payment_status: 'paid',
-      customer_email,
+      customer_email: customer_email || null,
       notes: notes || `Venta manual creada por ${req.user.email}`
     }, { transaction });
 
