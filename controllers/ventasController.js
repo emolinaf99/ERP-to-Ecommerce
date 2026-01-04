@@ -295,6 +295,7 @@ export const crearVentaManual = async (req, res) => {
       customer_email,
       customer_name,
       customer_phone,
+      customer_address,
       payment_method = 'efectivo',
       payment_responsible,
       notes
@@ -322,6 +323,14 @@ export const crearVentaManual = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: 'El teléfono del cliente es obligatorio'
+      });
+    }
+
+    if (!customer_address) {
+      await transaction.rollback();
+      return res.status(400).json({
+        success: false,
+        message: 'La dirección del cliente es obligatoria'
       });
     }
 
@@ -447,7 +456,7 @@ export const crearVentaManual = async (req, res) => {
       shipping_address: {
         name: customer_name || customer_phone,
         phone: customer_phone,
-        address: 'Venta directa',
+        address: customer_address,
         city: 'N/A',
         department: 'N/A',
         country: 'Colombia'
@@ -663,6 +672,7 @@ export const getNecesidadesFragancias = async (req, res) => {
         const key = `${item.house_name}|${item.fragrance_name}`;
 
         if (!necesidades[key]) {
+          const fechaPedido = pedido.created_at || pedido.createdAt;
           necesidades[key] = {
             house_name: item.house_name,
             fragrance_name: item.fragrance_name,
@@ -671,14 +681,15 @@ export const getNecesidadesFragancias = async (req, res) => {
             total_cantidad: 0,
             total_gramos_fragancia: 0,
             unidad: 'gr', // Siempre en gramos
-            fecha_pedido_mas_antiguo: pedido.created_at, // Fecha del primer pedido
+            fecha_pedido_mas_antiguo: fechaPedido, // Fecha del primer pedido
             pedidos: []
           };
         }
 
         // Actualizar fecha si este pedido es más antiguo
-        if (new Date(pedido.created_at) < new Date(necesidades[key].fecha_pedido_mas_antiguo)) {
-          necesidades[key].fecha_pedido_mas_antiguo = pedido.created_at;
+        const fechaPedido = pedido.created_at || pedido.createdAt;
+        if (fechaPedido && new Date(fechaPedido) < new Date(necesidades[key].fecha_pedido_mas_antiguo)) {
+          necesidades[key].fecha_pedido_mas_antiguo = fechaPedido;
         }
 
         // Sumar cantidades
@@ -690,7 +701,7 @@ export const getNecesidadesFragancias = async (req, res) => {
           volume: item.volume,
           fragrance_amount: fragranceAmount,
           status: pedido.status,
-          created_at: pedido.created_at
+          created_at: fechaPedido
         });
       }
     }
@@ -887,14 +898,43 @@ export const cambiarEstadoPedido = async (req, res) => {
       });
     }
 
-    // Buscar el pedido
-    const pedido = await Order.findByPk(orderId);
+    // Buscar el pedido con sus items
+    const pedido = await Order.findByPk(orderId, {
+      include: [{
+        model: OrderItem,
+        as: 'items'
+      }]
+    });
 
     if (!pedido) {
       return res.status(404).json({
         success: false,
         message: 'Pedido no encontrado'
       });
+    }
+
+    // ⚠️ VALIDACIÓN: Si el nuevo estado es "finished", verificar que NO haya fragancias agotadas
+    if (nuevo_estado === 'finished') {
+      const fraganciasAgotadas = pedido.items.filter(item => !item.fragrance_purchased);
+
+      if (fraganciasAgotadas.length > 0) {
+        // Construir mensaje con las fragancias agotadas
+        const listaAgotadas = fraganciasAgotadas.map(item =>
+          `${item.fragrance_name} / ${item.house_name}`
+        ).join(', ');
+
+        console.log(`⚠️ [PRODUCCIÓN] No se puede marcar como "finished" el pedido ${pedido.order_number}. Fragancias agotadas: ${listaAgotadas}`);
+
+        return res.status(400).json({
+          success: false,
+          message: `No se puede marcar como finalizado. Las siguientes fragancias están agotadas y pendientes de compra: ${listaAgotadas}`,
+          fragancias_agotadas: fraganciasAgotadas.map(item => ({
+            fragrance_name: item.fragrance_name,
+            house_name: item.house_name,
+            quantity: item.quantity
+          }))
+        });
+      }
     }
 
     const estadoAnterior = pedido.status;
