@@ -1,7 +1,7 @@
 {
   "name": "svc-erp",
   "version": "1.0.0",
-  "description": "Microservicio ERP para Grasse - Gestión de producción, ventas y compras (Port 3002)",
+  "description": "Microservicio ERP para Grasse - Gestión de producción, ventas y logistica (Port 3002)",
   "type": "module",
   "main": "App.js",
   "scripts": {
@@ -12,7 +12,7 @@
     "erp",
     "microservicio",
     "ventas",
-    "compras",
+    "logistica",
     "produccion"
   ],
   "author": "Grasse",

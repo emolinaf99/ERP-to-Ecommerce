@@ -9,7 +9,7 @@ Microservicio independiente para gestionar operaciones de ERP (Ventas, Compras y
 - **Base de Datos Compartida**: Accede a las mismas tablas que el ecommerce
 - **Módulos**:
   - ✅ **Ventas**: Crear ventas manuales de pedidos por Instagram, WhatsApp, etc.
-  - 🚧 **Compras**: Gestión de compras (próximamente)
+  - 🚧 **Compras**: Gestión de logistica (próximamente)
   - 🚧 **Producción**: Control de producción (próximamente)
 
 ## Instalación

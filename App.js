@@ -14,7 +14,7 @@ const app = express();
 const PORT = process.env.PORT || 3002;
 
 // Confiar en el proxy (nginx) para headers como X-Forwarded-For
-app.set('trust proxy', true);
+app.set('trust proxy', 1);
 
 /**
  * MIDDLEWARE DE SEGURIDAD
@@ -67,7 +67,7 @@ app.get('/', (req, res) => {
     version: '1.0.0',
     endpoints: {
       ventas: '/api/erp/ventas',
-      compras: '/api/erp/compras (próximamente)',
+      logistica: '/api/erp/logistica (próximamente)',
       produccion: '/api/erp/produccion (próximamente)'
     }
   });

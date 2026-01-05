@@ -631,9 +631,9 @@ export const getTodosPedidos = async (req, res) => {
 };
 
 /**
- * GET /api/erp/compras/necesidades-fragancias
+ * GET /api/erp/logistica/necesidades-fragancias
  * Calcular cuánta fragancia se necesita comprar según pedidos confirmados
- * Solo para rol compras y admin
+ * Solo para rol logistica y admin
  *
  * IMPORTANTE: Solo se consideran pedidos en estado 'confirmed'
  */
@@ -735,7 +735,7 @@ export const getNecesidadesFragancias = async (req, res) => {
 /**
  * POST /api/erp/ventas/cambiar-estado-pedidos-activos
  * Cambiar el estado de todos los pedidos activos (confirmed)
- * Solo para rol compras y admin
+ * Solo para rol logistica y admin
  *
  * Si hay fragancias_agotadas, los pedidos que contienen esas fragancias
  * se mantienen en 'confirmed' y NO se cambian a 'processing'

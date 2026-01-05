@@ -41,11 +41,11 @@ router.get('/mis-ventas', authenticate, authorize('ventas', 'admin'), getMisVent
 // Ruta para obtener todos los pedidos (producción y admin)
 router.get('/todos-pedidos', authenticate, authorize('produccion', 'admin'), getTodosPedidos);
 
-// Ruta para obtener necesidades de fragancias (compras y admin)
-router.get('/necesidades-fragancias', authenticate, authorize('compras', 'admin'), getNecesidadesFragancias);
+// Ruta para obtener necesidades de fragancias (logistica y admin)
+router.get('/necesidades-fragancias', authenticate, authorize('logistica', 'admin'), getNecesidadesFragancias);
 
-// Ruta para cambiar el estado de pedidos activos (compras y admin)
-router.post('/cambiar-estado-pedidos-activos', authenticate, authorize('compras', 'admin'), cambiarEstadoPedidosActivos);
+// Ruta para cambiar el estado de pedidos activos (logistica y admin)
+router.post('/cambiar-estado-pedidos-activos', authenticate, authorize('logistica', 'admin'), cambiarEstadoPedidosActivos);
 
 // Ruta para cambiar el estado de un pedido individual (producción y admin)
 router.put('/pedido/:orderId/estado', authenticate, authorize('produccion', 'admin'), cambiarEstadoPedido);
