@@ -1,5 +1,6 @@
 import express from 'express';
 import { authenticate, authorize } from '../middleware/auth.js';
+import { uploadPaymentReceipt, handlePaymentUploadError } from '../middleware/uploadPaymentReceipt.js';
 import {
   getCategorias,
   getCasas,
@@ -10,7 +11,11 @@ import {
   getTodosPedidos,
   getNecesidadesFragancias,
   cambiarEstadoPedidosActivos,
-  cambiarEstadoPedido
+  cambiarEstadoPedido,
+  getTodasVentas,
+  getCuentasPorCobrar,
+  getHistorialPagos,
+  registrarPago
 } from '../controllers/ventasController.js';
 
 const router = express.Router();
@@ -49,5 +54,28 @@ router.post('/cambiar-estado-pedidos-activos', authenticate, authorize('logistic
 
 // Ruta para cambiar el estado de un pedido individual (producción y admin)
 router.put('/pedido/:orderId/estado', authenticate, authorize('produccion', 'admin'), cambiarEstadoPedido);
+
+// ==========================================
+// RUTAS DE VENTAS Y CUENTAS POR COBRAR
+// ==========================================
+
+// Ruta para obtener todas las ventas (solo admin)
+router.get('/todas-ventas', authenticate, authorize('admin'), getTodasVentas);
+
+// Ruta para obtener cuentas por cobrar (ventas y admin)
+router.get('/cuentas-por-cobrar', authenticate, authorize('ventas', 'admin'), getCuentasPorCobrar);
+
+// Ruta para obtener historial de pagos de una orden (ventas y admin)
+router.get('/orden/:orderId/pagos', authenticate, authorize('ventas', 'admin'), getHistorialPagos);
+
+// Ruta para registrar un pago/abono con comprobante (ventas y admin)
+router.post(
+  '/orden/:orderId/registrar-pago',
+  authenticate,
+  authorize('ventas', 'admin'),
+  uploadPaymentReceipt,
+  handlePaymentUploadError,
+  registrarPago
+);
 
 export default router;

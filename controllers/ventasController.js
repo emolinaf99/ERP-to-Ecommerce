@@ -9,7 +9,7 @@ const Order = sequelize.define('Order', {
   id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
   user_id: { type: DataTypes.INTEGER, allowNull: false },
   order_number: { type: DataTypes.STRING(50), allowNull: false, unique: true },
-  status: { type: DataTypes.ENUM('pending', 'confirmed', 'processing', 'shipped', 'delivered', 'cancelled'), defaultValue: 'confirmed' },
+  status: { type: DataTypes.ENUM('pending', 'confirmed', 'processing', 'finished', 'shipped', 'delivered', 'cancelled'), defaultValue: 'confirmed' },
   subtotal: { type: DataTypes.DECIMAL(10, 2), allowNull: false },
   discount_amount: { type: DataTypes.DECIMAL(10, 2), defaultValue: 0 },
   total: { type: DataTypes.DECIMAL(10, 2), allowNull: false },
@@ -24,9 +24,23 @@ const Order = sequelize.define('Order', {
   payment_details: { type: DataTypes.JSON, allowNull: true },
   customer_email: { type: DataTypes.STRING(255), allowNull: true },
   newsletter_consent: { type: DataTypes.BOOLEAN, defaultValue: false },
-  notes: { type: DataTypes.TEXT, allowNull: true }
+  notes: { type: DataTypes.TEXT, allowNull: true },
+  amount_paid: { type: DataTypes.DECIMAL(10, 2), defaultValue: 0 }
 }, {
   tableName: 'orders',
+  underscored: true,
+  timestamps: true
+});
+
+const PaymentRecord = sequelize.define('PaymentRecord', {
+  id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+  order_id: { type: DataTypes.INTEGER, allowNull: false },
+  amount: { type: DataTypes.DECIMAL(10, 2), allowNull: false },
+  receipt_url: { type: DataTypes.STRING(500), allowNull: false },
+  notes: { type: DataTypes.TEXT, allowNull: true },
+  registered_by: { type: DataTypes.INTEGER, allowNull: false }
+}, {
+  tableName: 'payment_records',
   underscored: true,
   timestamps: true
 });
@@ -100,6 +114,14 @@ const TypeVolume = sequelize.define('TypeVolume', {
   abbreviation: { type: DataTypes.STRING(10), allowNull: false }
 }, { tableName: 'type_volumes', underscored: true });
 
+// Modelo User para asociaciones de PaymentRecord
+const User = sequelize.define('User', {
+  id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+  first_name: { type: DataTypes.STRING(100), allowNull: false },
+  last_name: { type: DataTypes.STRING(100), allowNull: false },
+  email: { type: DataTypes.STRING(255), allowNull: false, unique: true }
+}, { tableName: 'users', underscored: true });
+
 // Asociaciones
 Order.hasMany(OrderItem, { foreignKey: 'order_id', as: 'items' });
 OrderItem.belongsTo(Order, { foreignKey: 'order_id' });
@@ -113,6 +135,11 @@ Category.belongsTo(TypeVolume, { foreignKey: 'type_size_id', as: 'typeSize' });
 TypeVolume.hasMany(Category, { foreignKey: 'type_size_id' });
 Fragrance.belongsTo(House, { foreignKey: 'house_id' });
 House.hasMany(Fragrance, { foreignKey: 'house_id' });
+
+// Asociaciones de PaymentRecord
+Order.hasMany(PaymentRecord, { foreignKey: 'order_id', as: 'paymentRecords' });
+PaymentRecord.belongsTo(Order, { foreignKey: 'order_id', as: 'order' });
+PaymentRecord.belongsTo(User, { foreignKey: 'registered_by', as: 'registeredByUser' });
 
 /**
  * Genera un número de orden único
@@ -939,6 +966,21 @@ export const cambiarEstadoPedido = async (req, res) => {
 
     const estadoAnterior = pedido.status;
 
+    // Si el nuevo estado es "processing", marcar todos los items como fragrance_purchased = true
+    // Esto asegura que pedidos que pasan a procesamiento tengan las fragancias marcadas como compradas
+    if (nuevo_estado === 'processing' && estadoAnterior === 'confirmed') {
+      let itemsMarcados = 0;
+      for (const item of pedido.items) {
+        if (!item.fragrance_purchased) {
+          await item.update({ fragrance_purchased: true });
+          itemsMarcados++;
+        }
+      }
+      if (itemsMarcados > 0) {
+        console.log(`✅ [PRODUCCIÓN] ${itemsMarcados} item(s) marcado(s) como fragrance_purchased`);
+      }
+    }
+
     // Actualizar el estado
     await pedido.update({ status: nuevo_estado });
 
@@ -958,6 +1000,352 @@ export const cambiarEstadoPedido = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Error al cambiar el estado del pedido'
+    });
+  }
+};
+
+// ==========================================
+// ENDPOINTS DE VENTAS Y CUENTAS POR COBRAR
+// ==========================================
+
+/**
+ * GET /api/erp/ventas/todas-ventas
+ * Obtener todas las ventas/órdenes del sistema
+ * Solo para rol admin
+ */
+export const getTodasVentas = async (req, res) => {
+  try {
+    const { limit = 50, offset = 0, status, payment_status, payment_method, fecha_inicio, fecha_fin } = req.query;
+
+    // Construir filtro de búsqueda
+    const where = {};
+
+    if (status) {
+      where.status = status;
+    }
+
+    if (payment_status) {
+      where.payment_status = payment_status;
+    }
+
+    if (payment_method) {
+      where.payment_method = payment_method;
+    }
+
+    // Filtro por rango de fechas
+    if (fecha_inicio || fecha_fin) {
+      where.created_at = {};
+      if (fecha_inicio) {
+        where.created_at[sequelize.Sequelize.Op.gte] = new Date(fecha_inicio);
+      }
+      if (fecha_fin) {
+        // Añadir 23:59:59 al final del día
+        const fin = new Date(fecha_fin);
+        fin.setHours(23, 59, 59, 999);
+        where.created_at[sequelize.Sequelize.Op.lte] = fin;
+      }
+    }
+
+    const ventas = await Order.findAll({
+      where,
+      include: [
+        {
+          model: OrderItem,
+          as: 'items'
+        },
+        {
+          model: PaymentRecord,
+          as: 'paymentRecords',
+          include: [
+            {
+              model: User,
+              as: 'registeredByUser',
+              attributes: ['id', 'name', 'email']
+            }
+          ]
+        }
+      ],
+      order: [['created_at', 'DESC']],
+      limit: parseInt(limit),
+      offset: parseInt(offset)
+    });
+
+    const total = await Order.count({ where });
+
+    // Calcular estadísticas
+    const statsWhere = { ...where };
+    const [totalVentas, ventasPagadas, ventasPendientes] = await Promise.all([
+      Order.sum('total', { where: statsWhere }),
+      Order.sum('total', { where: { ...statsWhere, payment_status: 'paid' } }),
+      Order.sum('total', { where: { ...statsWhere, payment_status: 'pending' } })
+    ]);
+
+    res.json({
+      success: true,
+      data: {
+        ventas,
+        total,
+        limit: parseInt(limit),
+        offset: parseInt(offset),
+        estadisticas: {
+          total_ventas: totalVentas || 0,
+          ventas_pagadas: ventasPagadas || 0,
+          ventas_pendientes: ventasPendientes || 0
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Error obteniendo todas las ventas:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error al obtener las ventas'
+    });
+  }
+};
+
+/**
+ * GET /api/erp/ventas/cuentas-por-cobrar
+ * Obtener órdenes con payment_method='credito' que tienen saldo pendiente
+ * Para roles: ventas, admin
+ */
+export const getCuentasPorCobrar = async (req, res) => {
+  try {
+    const { limit = 50, offset = 0 } = req.query;
+
+    // Obtener órdenes a crédito que no están completamente pagadas
+    const cuentas = await Order.findAll({
+      where: {
+        payment_method: 'credito',
+        // Filtrar donde amount_paid < total (hay saldo pendiente)
+        [sequelize.Sequelize.Op.and]: [
+          sequelize.Sequelize.literal('amount_paid < total')
+        ]
+      },
+      include: [
+        {
+          model: OrderItem,
+          as: 'items'
+        },
+        {
+          model: PaymentRecord,
+          as: 'paymentRecords',
+          include: [
+            {
+              model: User,
+              as: 'registeredByUser',
+              attributes: ['id', 'name', 'email']
+            }
+          ],
+          order: [['created_at', 'DESC']]
+        }
+      ],
+      order: [['created_at', 'ASC']], // Más antiguas primero (mayor prioridad)
+      limit: parseInt(limit),
+      offset: parseInt(offset)
+    });
+
+    // Añadir campo calculado de saldo pendiente
+    const cuentasConSaldo = cuentas.map(cuenta => {
+      const cuentaJSON = cuenta.toJSON();
+      cuentaJSON.saldo_pendiente = parseFloat(cuentaJSON.total) - parseFloat(cuentaJSON.amount_paid || 0);
+      return cuentaJSON;
+    });
+
+    const total = await Order.count({
+      where: {
+        payment_method: 'credito',
+        [sequelize.Sequelize.Op.and]: [
+          sequelize.Sequelize.literal('amount_paid < total')
+        ]
+      }
+    });
+
+    // Calcular total pendiente por cobrar
+    const totalPendiente = cuentasConSaldo.reduce((sum, cuenta) => sum + cuenta.saldo_pendiente, 0);
+
+    res.json({
+      success: true,
+      data: {
+        cuentas: cuentasConSaldo,
+        total,
+        limit: parseInt(limit),
+        offset: parseInt(offset),
+        total_pendiente_cobrar: totalPendiente
+      }
+    });
+  } catch (error) {
+    console.error('Error obteniendo cuentas por cobrar:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error al obtener cuentas por cobrar'
+    });
+  }
+};
+
+/**
+ * GET /api/erp/ventas/orden/:orderId/pagos
+ * Obtener historial de pagos de una orden específica
+ * Para roles: ventas, admin
+ */
+export const getHistorialPagos = async (req, res) => {
+  try {
+    const { orderId } = req.params;
+
+    const orden = await Order.findByPk(orderId, {
+      include: [
+        {
+          model: OrderItem,
+          as: 'items'
+        },
+        {
+          model: PaymentRecord,
+          as: 'paymentRecords',
+          include: [
+            {
+              model: User,
+              as: 'registeredByUser',
+              attributes: ['id', 'name', 'email']
+            }
+          ],
+          order: [['created_at', 'DESC']]
+        }
+      ]
+    });
+
+    if (!orden) {
+      return res.status(404).json({
+        success: false,
+        message: 'Orden no encontrada'
+      });
+    }
+
+    const ordenJSON = orden.toJSON();
+    ordenJSON.saldo_pendiente = parseFloat(ordenJSON.total) - parseFloat(ordenJSON.amount_paid || 0);
+
+    res.json({
+      success: true,
+      data: {
+        orden: ordenJSON
+      }
+    });
+  } catch (error) {
+    console.error('Error obteniendo historial de pagos:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error al obtener historial de pagos'
+    });
+  }
+};
+
+/**
+ * POST /api/erp/ventas/orden/:orderId/registrar-pago
+ * Registrar un abono/pago para una orden
+ * Requiere subir comprobante de pago
+ * Para roles: ventas, admin
+ */
+export const registrarPago = async (req, res) => {
+  const transaction = await sequelize.transaction();
+
+  try {
+    const { orderId } = req.params;
+    const { amount, notes } = req.body;
+
+    // Validar que se subió un comprobante
+    if (!req.file) {
+      await transaction.rollback();
+      return res.status(400).json({
+        success: false,
+        message: 'El comprobante de pago es obligatorio'
+      });
+    }
+
+    // Validar monto
+    const montoAbono = parseFloat(amount);
+    if (!montoAbono || montoAbono <= 0) {
+      await transaction.rollback();
+      return res.status(400).json({
+        success: false,
+        message: 'El monto del abono debe ser mayor a 0'
+      });
+    }
+
+    // Buscar la orden
+    const orden = await Order.findByPk(orderId, { transaction });
+
+    if (!orden) {
+      await transaction.rollback();
+      return res.status(404).json({
+        success: false,
+        message: 'Orden no encontrada'
+      });
+    }
+
+    // Calcular saldo pendiente
+    const saldoPendiente = parseFloat(orden.total) - parseFloat(orden.amount_paid || 0);
+
+    // Validar que el monto no exceda el saldo pendiente
+    if (montoAbono > saldoPendiente) {
+      await transaction.rollback();
+      return res.status(400).json({
+        success: false,
+        message: `El monto del abono ($${montoAbono.toLocaleString()}) excede el saldo pendiente ($${saldoPendiente.toLocaleString()})`
+      });
+    }
+
+    // Construir URL del comprobante
+    const receiptUrl = `/uploads/payment_receipts/${req.file.filename}`;
+
+    // Crear registro de pago
+    const paymentRecord = await PaymentRecord.create({
+      order_id: orderId,
+      amount: montoAbono,
+      receipt_url: receiptUrl,
+      notes: notes || null,
+      registered_by: req.user.id
+    }, { transaction });
+
+    // Actualizar amount_paid en la orden
+    const nuevoAmountPaid = parseFloat(orden.amount_paid || 0) + montoAbono;
+    await orden.update({ amount_paid: nuevoAmountPaid }, { transaction });
+
+    // Si el pago completa el total, cambiar payment_status a 'paid'
+    const nuevoSaldoPendiente = parseFloat(orden.total) - nuevoAmountPaid;
+    if (nuevoSaldoPendiente <= 0) {
+      await orden.update({ payment_status: 'paid' }, { transaction });
+      console.log(`✅ [VENTAS] Orden ${orden.order_number} completamente pagada`);
+    }
+
+    await transaction.commit();
+
+    console.log(`💰 [VENTAS] Pago registrado: $${montoAbono.toLocaleString()} para orden ${orden.order_number}`);
+
+    res.status(201).json({
+      success: true,
+      message: nuevoSaldoPendiente <= 0
+        ? 'Pago registrado. La orden ha sido completamente pagada.'
+        : 'Abono registrado exitosamente',
+      data: {
+        payment: {
+          id: paymentRecord.id,
+          amount: montoAbono,
+          receipt_url: receiptUrl
+        },
+        orden: {
+          id: orden.id,
+          order_number: orden.order_number,
+          total: parseFloat(orden.total),
+          amount_paid: nuevoAmountPaid,
+          saldo_pendiente: nuevoSaldoPendiente > 0 ? nuevoSaldoPendiente : 0,
+          payment_status: nuevoSaldoPendiente <= 0 ? 'paid' : 'pending'
+        }
+      }
+    });
+  } catch (error) {
+    await transaction.rollback();
+    console.error('Error registrando pago:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error al registrar el pago'
     });
   }
 };
