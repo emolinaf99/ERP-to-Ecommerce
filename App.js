@@ -23,16 +23,32 @@ app.use(helmet({
   crossOriginResourcePolicy: { policy: 'cross-origin' }
 }));
 
-// CORS - Permitir comunicación con el frontend
+
+// Configurar orígenes permitidos para CORS
+const allowedOrigins = [
+  process.env.FRONTEND_URL || 'http://localhost:5173',
+  'https://grassehouse.co',
+  'https://www.grassehouse.co',
+  'http://localhost:5173'
+];
+
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:5173',
-  credentials: true, // MUY IMPORTANTE: Permitir envío de cookies
+  origin: function (origin, callback) {
+    // Permitir requests sin origin (Postman, curl, server-to-server)
+    if (!origin) return callback(null, true);
+
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    } else {
+      return callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true, // Permitir envío de cookies
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'Cookie'],
   exposedHeaders: ['Set-Cookie']
 }));
 
-console.log('🔧 [ERP] CORS configurado para:', process.env.FRONTEND_URL || 'http://localhost:5173');
 
 // Rate Limiting - Protección contra ataques de fuerza bruta
 const limiter = rateLimit({
