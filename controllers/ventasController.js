@@ -1060,7 +1060,7 @@ export const getTodasVentas = async (req, res) => {
             {
               model: User,
               as: 'registeredByUser',
-              attributes: ['id', 'name', 'email']
+              attributes: ['id', 'first_name', 'last_name', 'email']
             }
           ]
         }
@@ -1133,7 +1133,7 @@ export const getCuentasPorCobrar = async (req, res) => {
             {
               model: User,
               as: 'registeredByUser',
-              attributes: ['id', 'name', 'email']
+              attributes: ['id', 'first_name', 'last_name', 'email']
             }
           ],
           order: [['created_at', 'DESC']]
@@ -1204,7 +1204,7 @@ export const getHistorialPagos = async (req, res) => {
             {
               model: User,
               as: 'registeredByUser',
-              attributes: ['id', 'name', 'email']
+              attributes: ['id', 'first_name', 'last_name', 'email']
             }
           ],
           order: [['created_at', 'DESC']]
