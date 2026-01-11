@@ -472,6 +472,13 @@ export const crearVentaManual = async (req, res) => {
     // Generar número de orden
     const orderNumber = await generateOrderNumber();
 
+    // Determinar payment_status y amount_paid según el método de pago
+    // Si es 'credito', el pago está pendiente y amount_paid es 0
+    // Para otros métodos (efectivo, transferencia, etc.), se asume pagado
+    const isCredito = payment_method === 'credito';
+    const paymentStatus = isCredito ? 'pending' : 'paid';
+    const amountPaid = isCredito ? 0 : total;
+
     // Crear la orden
     const order = await Order.create({
       user_id: req.user.id, // Usuario de ventas que crea la orden
@@ -491,7 +498,8 @@ export const crearVentaManual = async (req, res) => {
       delivery_method: 'pickup',
       payment_method,
       payment_responsible,
-      payment_status: 'paid',
+      payment_status: paymentStatus,
+      amount_paid: amountPaid,
       customer_email: customer_email || null,
       notes: notes || `Venta manual creada por ${req.user.email}`
     }, { transaction });
@@ -679,7 +687,7 @@ export const getNecesidadesFragancias = async (req, res) => {
       ]
     });
 
-    // Agrupar fragancias por casa y fragancia
+    // Agrupar fragancias por casa, fragancia Y género
     // SOLO incluir items donde fragrance_purchased = false
     const necesidades = {};
 
@@ -695,8 +703,8 @@ export const getNecesidadesFragancias = async (req, res) => {
           ? parseFloat(item.fragrance_amount)
           : 0;
 
-        // Crear clave única: casa + fragancia
-        const key = `${item.house_name}|${item.fragrance_name}`;
+        // Crear clave única: casa + fragancia + género (para no mezclar M/F/U)
+        const key = `${item.house_name}|${item.fragrance_name}|${item.gender}`;
 
         if (!necesidades[key]) {
           const fechaPedido = pedido.created_at || pedido.createdAt;
@@ -1346,6 +1354,69 @@ export const registrarPago = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Error al registrar el pago'
+    });
+  }
+};
+
+/**
+ * Obtener nombres de clientes únicos de ventas anteriores
+ * Para autocompletado en el campo de nombre del cliente
+ */
+export const getNombresClientes = async (req, res) => {
+  try {
+    const { q = '' } = req.query;
+
+    // Buscar nombres únicos en shipping_address.name de todas las órdenes
+    const ordenes = await Order.findAll({
+      attributes: ['shipping_address'],
+      where: {
+        status: {
+          [sequelize.Sequelize.Op.notIn]: ['cancelled']
+        }
+      },
+      order: [['created_at', 'DESC']],
+      raw: true
+    });
+
+    // Extraer nombres únicos
+    const nombresSet = new Set();
+    for (const orden of ordenes) {
+      if (orden.shipping_address) {
+        const shippingAddress = typeof orden.shipping_address === 'string'
+          ? JSON.parse(orden.shipping_address)
+          : orden.shipping_address;
+
+        const nombre = shippingAddress.name || shippingAddress.firstName;
+        if (nombre && nombre.trim()) {
+          nombresSet.add(nombre.trim());
+        }
+      }
+    }
+
+    // Convertir a array y filtrar por query si existe
+    let nombres = Array.from(nombresSet);
+
+    if (q && q.trim()) {
+      const queryLower = q.toLowerCase().trim();
+      nombres = nombres.filter(nombre =>
+        nombre.toLowerCase().includes(queryLower)
+      );
+    }
+
+    // Ordenar alfabéticamente y limitar a 20 resultados
+    nombres = nombres.sort((a, b) => a.localeCompare(b)).slice(0, 20);
+
+    res.json({
+      success: true,
+      data: {
+        nombres
+      }
+    });
+  } catch (error) {
+    console.error('Error obteniendo nombres de clientes:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error al obtener nombres de clientes'
     });
   }
 };

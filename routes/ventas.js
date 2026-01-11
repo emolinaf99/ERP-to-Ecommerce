@@ -15,7 +15,8 @@ import {
   getTodasVentas,
   getCuentasPorCobrar,
   getHistorialPagos,
-  registrarPago
+  registrarPago,
+  getNombresClientes
 } from '../controllers/ventasController.js';
 
 const router = express.Router();
@@ -38,6 +39,9 @@ router.get('/productos-por-categoria/:categoryId', authenticate, authorize('come
 // Paso 2: Seleccionar casa y obtener fragancias (independiente)
 router.get('/casas', authenticate, authorize('comercial', 'admin'), getCasas);
 router.get('/fragancias/:houseId', authenticate, authorize('comercial', 'admin'), getFraganciasPorCasa);
+
+// Autocompletado de nombres de clientes
+router.get('/nombres-clientes', authenticate, authorize('comercial', 'admin'), getNombresClientes);
 
 // Rutas para gestionar ventas
 router.post('/crear', authenticate, authorize('comercial', 'admin'), crearVentaManual);
