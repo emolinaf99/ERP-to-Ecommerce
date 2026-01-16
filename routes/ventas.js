@@ -16,7 +16,11 @@ import {
   getCuentasPorCobrar,
   getHistorialPagos,
   registrarPago,
-  getNombresClientes
+  getNombresClientes,
+  getOrdenParaEditar,
+  actualizarItemOrden,
+  cancelarOrden,
+  actualizarTotalOrden
 } from '../controllers/ventasController.js';
 
 const router = express.Router();
@@ -56,8 +60,8 @@ router.get('/necesidades-fragancias', authenticate, authorize('logistica', 'admi
 // Ruta para cambiar el estado de pedidos activos (logistica y admin)
 router.post('/cambiar-estado-pedidos-activos', authenticate, authorize('logistica', 'admin'), cambiarEstadoPedidosActivos);
 
-// Ruta para cambiar el estado de un pedido individual (producción y admin)
-router.put('/pedido/:orderId/estado', authenticate, authorize('produccion', 'admin'), cambiarEstadoPedido);
+// Ruta para cambiar el estado de un pedido individual (producción, comercial y admin)
+router.put('/pedido/:orderId/estado', authenticate, authorize('produccion', 'comercial', 'admin'), cambiarEstadoPedido);
 
 // ==========================================
 // RUTAS DE VENTAS Y CUENTAS POR COBRAR
@@ -81,5 +85,21 @@ router.post(
   handlePaymentUploadError,
   registrarPago
 );
+
+// ==========================================
+// RUTAS DE EDICIÓN DE ÓRDENES
+// ==========================================
+
+// Ruta para obtener una orden para edición (comercial y admin)
+router.get('/orden/:orderId', authenticate, authorize('comercial', 'admin'), getOrdenParaEditar);
+
+// Ruta para actualizar un item de una orden (comercial y admin)
+router.put('/orden/:orderId/item/:itemId', authenticate, authorize('comercial', 'admin'), actualizarItemOrden);
+
+// Ruta para cancelar una orden (comercial y admin)
+router.put('/orden/:orderId/cancelar', authenticate, authorize('comercial', 'admin'), cancelarOrden);
+
+// Ruta para actualizar el total de una orden manual (comercial y admin)
+router.put('/orden/:orderId/total', authenticate, authorize('comercial', 'admin'), actualizarTotalOrden);
 
 export default router;

@@ -472,9 +472,9 @@ export const crearVentaManual = async (req, res) => {
     // Generar número de orden
     const orderNumber = await generateOrderNumber();
 
-    // Determinar payment_status y amount_paid según el método de pago
-    // Si es 'credito', el pago está pendiente y amount_paid es 0
-    // Para otros métodos (efectivo, transferencia, etc.), se asume pagado
+    // Determinar estado de pago según el método:
+    // - Crédito: pago pendiente (se registrará después con comprobante)
+    // - Efectivo/Transferencia: pago confirmado al momento de la venta
     const isCredito = payment_method === 'credito';
     const paymentStatus = isCredito ? 'pending' : 'paid';
     const amountPaid = isCredito ? 0 : total;
@@ -546,12 +546,52 @@ export const crearVentaManual = async (req, res) => {
  */
 export const getMisVentas = async (req, res) => {
   try {
-    const { limit = 50, offset = 0 } = req.query;
+    const { limit = 20, offset = 0, dateRange, status } = req.query;
+
+    // Construir filtro de búsqueda
+    const where = {
+      user_id: req.user.id
+    };
+
+    // Filtro de estado
+    if (status) {
+      where.status = status;
+    }
+
+    // Filtro de rango de fechas
+    if (dateRange && dateRange !== 'all') {
+      const now = new Date();
+      let startDate;
+
+      switch (dateRange) {
+        case '7days':
+          startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+          break;
+        case '1month':
+          startDate = new Date(now.getFullYear(), now.getMonth() - 1, now.getDate());
+          break;
+        case '3months':
+          startDate = new Date(now.getFullYear(), now.getMonth() - 3, now.getDate());
+          break;
+        case '6months':
+          startDate = new Date(now.getFullYear(), now.getMonth() - 6, now.getDate());
+          break;
+        case '1year':
+          startDate = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
+          break;
+        default:
+          startDate = null;
+      }
+
+      if (startDate) {
+        where.created_at = {
+          [sequelize.Sequelize.Op.gte]: startDate
+        };
+      }
+    }
 
     const ventas = await Order.findAll({
-      where: {
-        user_id: req.user.id
-      },
+      where,
       include: [
         {
           model: OrderItem,
@@ -563,9 +603,7 @@ export const getMisVentas = async (req, res) => {
       offset: parseInt(offset)
     });
 
-    const total = await Order.count({
-      where: { user_id: req.user.id }
-    });
+    const total = await Order.count({ where });
 
     res.json({
       success: true,
@@ -594,7 +632,7 @@ export const getMisVentas = async (req, res) => {
  */
 export const getTodosPedidos = async (req, res) => {
   try {
-    const { limit = 50, offset = 0, status } = req.query;
+    const { limit = 20, offset = 0, status, dateRange } = req.query;
     const userRole = req.user?.role;
 
     // Construir filtro de búsqueda
@@ -629,6 +667,38 @@ export const getTodosPedidos = async (req, res) => {
       // Para admin, aplicar filtro normal
       if (status) {
         where.status = status;
+      }
+    }
+
+    // Filtro de rango de fechas
+    if (dateRange && dateRange !== 'all') {
+      const now = new Date();
+      let startDate;
+
+      switch (dateRange) {
+        case '7days':
+          startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+          break;
+        case '1month':
+          startDate = new Date(now.getFullYear(), now.getMonth() - 1, now.getDate());
+          break;
+        case '3months':
+          startDate = new Date(now.getFullYear(), now.getMonth() - 3, now.getDate());
+          break;
+        case '6months':
+          startDate = new Date(now.getFullYear(), now.getMonth() - 6, now.getDate());
+          break;
+        case '1year':
+          startDate = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
+          break;
+        default:
+          startDate = null;
+      }
+
+      if (startDate) {
+        where.created_at = {
+          [sequelize.Sequelize.Op.gte]: startDate
+        };
       }
     }
 
@@ -1359,6 +1429,269 @@ export const registrarPago = async (req, res) => {
 };
 
 /**
+ * GET /api/erp/ventas/orden/:orderId
+ * Obtener detalles de una orden para edición
+ * Solo para rol comercial y admin
+ */
+export const getOrdenParaEditar = async (req, res) => {
+  try {
+    const { orderId } = req.params;
+
+    const orden = await Order.findByPk(orderId, {
+      include: [
+        {
+          model: OrderItem,
+          as: 'items'
+        }
+      ]
+    });
+
+    if (!orden) {
+      return res.status(404).json({
+        success: false,
+        message: 'Orden no encontrada'
+      });
+    }
+
+    // Solo se pueden editar órdenes en estado confirmed o processing
+    const estadosEditables = ['confirmed', 'processing'];
+    if (!estadosEditables.includes(orden.status)) {
+      return res.status(400).json({
+        success: false,
+        message: `No se puede editar una orden en estado "${orden.status}". Solo se pueden editar órdenes confirmadas o en procesamiento.`
+      });
+    }
+
+    res.json({
+      success: true,
+      data: { orden }
+    });
+  } catch (error) {
+    console.error('Error obteniendo orden para editar:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error al obtener la orden'
+    });
+  }
+};
+
+/**
+ * PUT /api/erp/ventas/orden/:orderId/item/:itemId
+ * Actualizar un item de una orden (cambiar fragancia o producto)
+ * Solo permite cambio si el precio es igual
+ * Solo para rol comercial y admin
+ */
+export const actualizarItemOrden = async (req, res) => {
+  const transaction = await sequelize.transaction();
+
+  try {
+    const { orderId, itemId } = req.params;
+    const { new_fragrance_id, new_product_id, reason } = req.body;
+
+    // Buscar la orden
+    const orden = await Order.findByPk(orderId, {
+      include: [{ model: OrderItem, as: 'items' }],
+      transaction
+    });
+
+    if (!orden) {
+      await transaction.rollback();
+      return res.status(404).json({
+        success: false,
+        message: 'Orden no encontrada'
+      });
+    }
+
+    // Solo se pueden editar órdenes en estado confirmed o processing
+    const estadosEditables = ['confirmed', 'processing'];
+    if (!estadosEditables.includes(orden.status)) {
+      await transaction.rollback();
+      return res.status(400).json({
+        success: false,
+        message: `No se puede editar una orden en estado "${orden.status}"`
+      });
+    }
+
+    // Buscar el item a editar
+    const item = orden.items.find(i => i.id == itemId);
+    if (!item) {
+      await transaction.rollback();
+      return res.status(404).json({
+        success: false,
+        message: 'Item no encontrado en la orden'
+      });
+    }
+
+    const cambios = {};
+    let nuevoPrecio = parseFloat(item.unit_price);
+
+    // Si se cambia la fragancia
+    if (new_fragrance_id) {
+      const nuevaFragancia = await Fragrance.findByPk(new_fragrance_id, {
+        include: [{ model: House }],
+        transaction
+      });
+
+      if (!nuevaFragancia) {
+        await transaction.rollback();
+        return res.status(404).json({
+          success: false,
+          message: 'Nueva fragancia no encontrada'
+        });
+      }
+
+      cambios.fragrance_name = nuevaFragancia.name;
+      cambios.house_name = nuevaFragancia.House.name;
+      cambios.gender = nuevaFragancia.gender;
+    }
+
+    // Si se cambia el producto
+    if (new_product_id) {
+      const nuevoProducto = await Product.findByPk(new_product_id, {
+        include: [
+          {
+            model: Category,
+            include: [{ model: TypeVolume, as: 'typeSize' }]
+          }
+        ],
+        transaction
+      });
+
+      if (!nuevoProducto) {
+        await transaction.rollback();
+        return res.status(404).json({
+          success: false,
+          message: 'Nuevo producto no encontrado'
+        });
+      }
+
+      nuevoPrecio = parseFloat(nuevoProducto.price);
+      const precioActual = parseFloat(item.unit_price);
+
+      // Verificar si el precio es diferente
+      if (Math.abs(nuevoPrecio - precioActual) > 0.01) {
+        await transaction.rollback();
+        return res.status(400).json({
+          success: false,
+          message: `El nuevo producto tiene un precio diferente ($${nuevoPrecio.toLocaleString()} vs $${precioActual.toLocaleString()}). Debe cancelar la orden y crear una nueva.`,
+          precio_actual: precioActual,
+          precio_nuevo: nuevoPrecio,
+          diferencia: nuevoPrecio - precioActual,
+          requiere_cancelacion: true
+        });
+      }
+
+      cambios.volume = `${nuevoProducto.volume}${nuevoProducto.Category?.typeSize?.abbreviation || ''}`;
+      cambios.category = nuevoProducto.Category.name;
+      cambios.fragrance_amount = nuevoProducto.fragrance_amount || null;
+    }
+
+    // Si no hay cambios, retornar error
+    if (Object.keys(cambios).length === 0) {
+      await transaction.rollback();
+      return res.status(400).json({
+        success: false,
+        message: 'Debe especificar una nueva fragancia o producto'
+      });
+    }
+
+    // Aplicar los cambios al item
+    await OrderItem.update(cambios, {
+      where: { id: itemId },
+      transaction
+    });
+
+    // Agregar nota a la orden sobre el cambio
+    const notaCambio = `[${new Date().toISOString()}] Item modificado por ${req.user.email}. Razón: ${reason || 'No especificada'}. Cambios: ${JSON.stringify(cambios)}`;
+    const notasActuales = orden.notes || '';
+    await orden.update({
+      notes: notasActuales + '\n' + notaCambio
+    }, { transaction });
+
+    await transaction.commit();
+
+    console.log(`✏️ [VENTAS] Item ${itemId} de orden ${orden.order_number} actualizado por ${req.user.email}`);
+
+    res.json({
+      success: true,
+      message: 'Item actualizado correctamente',
+      data: {
+        order_number: orden.order_number,
+        item_id: itemId,
+        cambios
+      }
+    });
+  } catch (error) {
+    await transaction.rollback();
+    console.error('Error actualizando item de orden:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error al actualizar el item'
+    });
+  }
+};
+
+/**
+ * PUT /api/erp/ventas/orden/:orderId/cancelar
+ * Cancelar una orden
+ * Solo para rol comercial y admin
+ */
+export const cancelarOrden = async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const { reason } = req.body;
+
+    const orden = await Order.findByPk(orderId);
+
+    if (!orden) {
+      return res.status(404).json({
+        success: false,
+        message: 'Orden no encontrada'
+      });
+    }
+
+    // Solo se pueden cancelar órdenes que no estén ya canceladas o entregadas
+    const estadosNoCancelables = ['cancelled', 'delivered'];
+    if (estadosNoCancelables.includes(orden.status)) {
+      return res.status(400).json({
+        success: false,
+        message: `No se puede cancelar una orden en estado "${orden.status}"`
+      });
+    }
+
+    // Guardar estado anterior
+    const estadoAnterior = orden.status;
+
+    // Agregar nota sobre la cancelación
+    const notaCancelacion = `[${new Date().toISOString()}] Orden cancelada por ${req.user.email}. Estado anterior: ${estadoAnterior}. Razón: ${reason || 'No especificada'}`;
+    const notasActuales = orden.notes || '';
+
+    await orden.update({
+      status: 'cancelled',
+      notes: notasActuales + '\n' + notaCancelacion
+    });
+
+    console.log(`❌ [VENTAS] Orden ${orden.order_number} cancelada por ${req.user.email}. Razón: ${reason || 'No especificada'}`);
+
+    res.json({
+      success: true,
+      message: 'Orden cancelada correctamente',
+      data: {
+        order_number: orden.order_number,
+        estado_anterior: estadoAnterior,
+        nuevo_estado: 'cancelled'
+      }
+    });
+  } catch (error) {
+    console.error('Error cancelando orden:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error al cancelar la orden'
+    });
+  }
+};
+
+/**
  * Obtener nombres de clientes únicos de ventas anteriores
  * Para autocompletado en el campo de nombre del cliente
  */
@@ -1417,6 +1750,107 @@ export const getNombresClientes = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Error al obtener nombres de clientes'
+    });
+  }
+};
+
+/**
+ * Actualizar el total de una orden manual
+ * Solo permite editar órdenes que empiecen con "ORD-" (manuales)
+ */
+export const actualizarTotalOrden = async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const { nuevo_total, reason } = req.body;
+
+    // Validar que se proporcionó el nuevo total
+    if (nuevo_total === undefined || nuevo_total === null) {
+      return res.status(400).json({
+        success: false,
+        message: 'Debes proporcionar el nuevo total'
+      });
+    }
+
+    const nuevoTotal = parseFloat(nuevo_total);
+    if (isNaN(nuevoTotal) || nuevoTotal < 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'El total debe ser un número válido mayor o igual a 0'
+      });
+    }
+
+    // Buscar la orden
+    const orden = await Order.findByPk(orderId);
+
+    if (!orden) {
+      return res.status(404).json({
+        success: false,
+        message: 'Orden no encontrada'
+      });
+    }
+
+    // Verificar que sea una orden manual (empieza con "ORD-")
+    if (!orden.order_number.startsWith('ORD-')) {
+      return res.status(403).json({
+        success: false,
+        message: 'Solo se pueden editar órdenes manuales (creadas desde ventas)'
+      });
+    }
+
+    // Verificar que la orden no esté cancelada o entregada
+    if (['cancelled', 'delivered'].includes(orden.status)) {
+      return res.status(400).json({
+        success: false,
+        message: `No se puede modificar una orden ${orden.status === 'cancelled' ? 'cancelada' : 'entregada'}`
+      });
+    }
+
+    const totalAnterior = parseFloat(orden.total);
+    const amountPaidActual = parseFloat(orden.amount_paid) || 0;
+
+    // Actualizar el total y subtotal
+    const notasActuales = orden.notes || '';
+    const fechaModificacion = new Date().toISOString().split('T')[0];
+    const notaModificacion = `[${fechaModificacion}] Total modificado de $${totalAnterior.toLocaleString()} a $${nuevoTotal.toLocaleString()} por ${req.user.email}${reason ? `. Razón: ${reason}` : ''}`;
+
+    // Recalcular el payment_status basado en el nuevo total
+    let nuevoPaymentStatus = orden.payment_status;
+    if (amountPaidActual >= nuevoTotal && nuevoTotal > 0) {
+      nuevoPaymentStatus = 'paid';
+    } else if (amountPaidActual > 0 && amountPaidActual < nuevoTotal) {
+      nuevoPaymentStatus = 'pending'; // Pago parcial
+    } else if (amountPaidActual === 0 && nuevoTotal > 0) {
+      nuevoPaymentStatus = 'pending';
+    }
+
+    await orden.update({
+      total: nuevoTotal,
+      subtotal: nuevoTotal, // Actualizar también el subtotal
+      payment_status: nuevoPaymentStatus,
+      notes: notasActuales ? notasActuales + '\n' + notaModificacion : notaModificacion
+    });
+
+    const nuevoSaldoPendiente = Math.max(0, nuevoTotal - amountPaidActual);
+
+    console.log(`💰 [VENTAS] Total de orden ${orden.order_number} modificado: $${totalAnterior.toLocaleString()} → $${nuevoTotal.toLocaleString()} por ${req.user.email}`);
+
+    res.json({
+      success: true,
+      message: 'Total de la orden actualizado correctamente',
+      data: {
+        order_number: orden.order_number,
+        total_anterior: totalAnterior,
+        total_nuevo: nuevoTotal,
+        amount_paid: amountPaidActual,
+        saldo_pendiente: nuevoSaldoPendiente,
+        payment_status: nuevoPaymentStatus
+      }
+    });
+  } catch (error) {
+    console.error('Error actualizando total de orden:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error al actualizar el total de la orden'
     });
   }
 };
